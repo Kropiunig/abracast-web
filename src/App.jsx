@@ -25,7 +25,31 @@ const STOPWORDS = new Set([
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const VETTED_SOURCES = [
+  "reuters.com", "apnews.com", "bbc.com", "theguardian.com", "espn.com", "skysports.com",
+];
+
 function cleanText(t) { return String(t||"").replace(/\s+/g," ").replace(/[|]/g,"/").trim(); }
+
+function parseEvidence(evidence) {
+  return String(evidence || "").split("|").map(s => s.trim()).filter(Boolean).map(item => {
+    const parts = item.split("—").map(s => s.trim());
+    return { title: parts[0] || item, domain: parts[1] || "", date: parts[2] || "" };
+  });
+}
+
+function formatGdeltDate(d) {
+  const s = String(d || "").replace(/\D/g, "");
+  if (s.length < 8) return d;
+  try {
+    const dt = new Date(`${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`);
+    return dt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  } catch { return String(d); }
+}
+
+function parseSources(sources) {
+  return String(sources || "").split(",").map((d) => d.trim().toLowerCase()).filter(Boolean);
+}
 
 function buildGdeltQuery(question) {
   return String(question||"").toLowerCase().replace(/[^a-z0-9\s]/g," ").split(/\s+/)
@@ -58,8 +82,12 @@ async function fetchGoogleNewsEvidence(question) {
   return articles;
 }
 
-async function fetchGdeltEvidence(question, onStatus=()=>{}) {
-  const query=`${buildGdeltQuery(question)} sourcelang:eng`;
+async function fetchGdeltEvidence(question, onStatus=()=>{}, sources="") {
+  const domains = parseSources(sources);
+  const clause = domains.length
+    ? " (" + domains.map((d) => `domainis:${d}`).join(" OR ") + ")"
+    : "";
+  const query=`${buildGdeltQuery(question)} sourcelang:eng${clause}`;
   const url="/gdelt/api/v2/doc/doc?"+new URLSearchParams({query,mode:"ArtList",format:"json",maxrecords:String(GDELT_MAX_RECORDS),sort:"DateDesc"}).toString();
   const MAX_ATTEMPTS=3; let data; let errorMsg="";
   for(let attempt=1;attempt<=MAX_ATTEMPTS;attempt++){
@@ -79,6 +107,13 @@ async function fetchGdeltEvidence(question, onStatus=()=>{}) {
     catch(e){ throw new Error(`Both sources failed. GDELT: ${errorMsg}. Google News: ${e.message}`); }
   }
   if(articles.length===0) throw new Error("No articles found for this question.");
+  if(domains.length){
+    articles=articles.filter(a=>{
+      const d=String(a.domain||"").toLowerCase().replace(/^www\./,"");
+      return domains.some(approved=>d===approved||d.endsWith("."+approved));
+    });
+    if(articles.length===0) throw new Error(`No articles found from approved sources: ${domains.join(", ")}`);
+  }
   const seen=new Set(); const items=[]; let used=0;
   for(const a of articles){
     const title=cleanText(a.title); if(!title) continue;
@@ -105,10 +140,14 @@ export default function App() {
   const resolvingRef = useRef(false);
   const [newType, setNewType] = useState("text");
   const [newQuestion, setNewQuestion] = useState("Did Donald Trump win the U.S. presidential election held on November 5, 2024? Answer YES or NO.");
-  const [newTarget, setNewTarget] = useState("100000");
+  const [newTarget, setNewTarget] = useState("5");
   const [newExpiry, setNewExpiry] = useState("");
   const [newLiquidity, setNewLiquidity] = useState("0.01");
   const [betAmount, setBetAmount] = useState("0.01");
+  const [newSources, setNewSources] = useState([]);
+  function toggleSource(d) {
+    setNewSources((s) => (s.includes(d) ? s.filter((x) => x !== d) : [...s, d]));
+  }
   const [showCreate, setShowCreate] = useState(false);
   const [filterType, setFilterType] = useState("all");
   const [hiddenIds, setHiddenIds] = useState(() => {
@@ -201,7 +240,7 @@ export default function App() {
     if(!newLiquidity||isNaN(parseFloat(newLiquidity))||parseFloat(newLiquidity)<=0) return alert("Enter valid liquidity");
     const expiry=BigInt(Math.floor(new Date(newExpiry).getTime()/1000));
     if(newType==="text"){
-      await withTx("Market created!",()=>send("createTextMarket",[newQuestion,expiry],parseEther(newLiquidity)));
+      await withTx("Market created!",()=>send("createTextMarket",[newQuestion,expiry,newSources.join(",")],parseEther(newLiquidity)));
     }else{
       await withTx("Market created!",()=>send("createMarket",[newQuestion,BigInt(Math.floor(parseFloat(newTarget)*1e8)),expiry],parseEther(newLiquidity)));
     }
@@ -244,7 +283,7 @@ export default function App() {
       if(m.isTextMarket){
         setStatus(`Fetching news for market #${m.id}...`);
         let evidence;
-        try{ evidence=await fetchGdeltEvidence(m.question,setStatus); }
+        try{ evidence=await fetchGdeltEvidence(m.question,setStatus,m.sources||""); }
         catch(err){
           const manual=window.prompt(`News fetch failed:\n"${err.message}"\n\nPaste evidence manually (max ${EVIDENCE_CHAR_BUDGET} chars):`);
           if(manual===null) throw new Error("Resolution cancelled.");
@@ -371,18 +410,10 @@ export default function App() {
         .pm-input:focus{border-color:#1652F0;}
         .pm-input::placeholder{color:#9CA3AF;}
 
-        .tab-bar-btn{
-          background:transparent;color:#6B7280;border:none;border-bottom:2px solid transparent;
-          padding:12px 4px;font-size:14px;font-weight:500;cursor:pointer;font-family:inherit;
-          transition:all 0.15s;white-space:nowrap;
-        }
-        .tab-bar-btn:hover{color:#111827;}
-        .tab-bar-btn.active{color:#111827;border-bottom-color:#111827;font-weight:700;}
-
         @keyframes slideUp{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
         .toast{animation:slideUp 0.25s ease forwards;}
 
-        @media(max-width:700px){
+        @media(max-width:860px){
           .markets-grid{grid-template-columns:1fr!important;}
           .create-grid{grid-template-columns:1fr!important;}
         }
@@ -452,8 +483,8 @@ export default function App() {
               {[["text","News / Text"],["price","Price (Chainlink)"]].map(([val,label])=>(
                 <button key={val} onClick={()=>{
                   setNewType(val);
-                  if(val==="price"&&newQuestion==="Did Donald Trump win the U.S. presidential election held on November 5, 2024? Answer YES or NO.") setNewQuestion("Will BTC close above $100,000?");
-                  if(val==="text"&&newQuestion==="Will BTC close above $100,000?") setNewQuestion("Did Donald Trump win the U.S. presidential election held on November 5, 2024? Answer YES or NO.");
+                  if(val==="price"&&newQuestion==="Did Donald Trump win the U.S. presidential election held on November 5, 2024? Answer YES or NO.") setNewQuestion("Will AVAX close above $5?");
+                  if(val==="text"&&newQuestion==="Will AVAX close above $5?") setNewQuestion("Did Donald Trump win the U.S. presidential election held on November 5, 2024? Answer YES or NO.");
                 }} style={{
                   background:newType===val?"#fff":"transparent",
                   color:newType===val?"#111827":"#6B7280",
@@ -476,7 +507,7 @@ export default function App() {
                 {newType==="price" && (
                   <div>
                     <label style={{display:"block",fontSize:12,fontWeight:600,color:"#374151",marginBottom:6}}>Target Price (USD)</label>
-                    <input value={newTarget} onChange={e=>setNewTarget(e.target.value)} className="pm-input" type="number" placeholder="100000"/>
+                    <input value={newTarget} onChange={e=>setNewTarget(e.target.value)} className="pm-input" type="number" placeholder="5"/>
                   </div>
                 )}
                 <div>
@@ -488,6 +519,28 @@ export default function App() {
                   <input value={newLiquidity} onChange={e=>setNewLiquidity(e.target.value)} className="pm-input" type="number" step="0.01" min="0.01" placeholder="0.01"/>
                 </div>
               </div>
+              {newType==="text" && (
+                <div style={{marginBottom:12}}>
+                  <label style={{display:"block",fontSize:12,fontWeight:600,color:"#374151",marginBottom:6}}>Approved News Sources (optional — stored on-chain)</label>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                    {VETTED_SOURCES.map((d) => (
+                      <button key={d} type="button" onClick={()=>toggleSource(d)} className="pm-btn" style={{
+                        background:newSources.includes(d)?"#2563eb":"#f3f4f6",
+                        color:newSources.includes(d)?"white":"#6b7280",
+                        border:newSources.includes(d)?"1px solid #2563eb":"1px solid #d1d5db",
+                        borderRadius:20,padding:"5px 14px",fontSize:12,cursor:"pointer",fontWeight:500
+                      }}>
+                        {newSources.includes(d)?"✓ ":""}{d}
+                      </button>
+                    ))}
+                  </div>
+                  {newSources.length>0 && (
+                    <div style={{fontSize:11,color:"#6b7280",marginTop:4}}>
+                      Resolution will only use articles from: {newSources.join(", ")}
+                    </div>
+                  )}
+                </div>
+              )}
               <div>
                 <button onClick={createMarket} disabled={loading||!config} className="pm-btn-primary" style={{padding:"10px 28px"}}>
                   {loading?"Creating...":newType==="text"?"Create Text Market":"Create Price Market"}
@@ -509,13 +562,15 @@ export default function App() {
 
       <main style={{padding:"28px 32px"}}>
 
-        <div style={{display:"flex",gap:8,marginBottom:24,overflowX:"auto",paddingBottom:4}}>
-          {[["all","All"],["active","Active"],["resolved","Resolved"],["text","News"],["price","Price"]].map(([val,label])=>(
-            <button key={val} onClick={()=>setFilterType(val)} className={`filter-pill${filterType===val?" active":""}`}>
-              {label}
-            </button>
-          ))}
-          <div style={{marginLeft:"auto",flexShrink:0,display:"flex",gap:8}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:24,gap:12,flexWrap:"wrap"}}>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            {[["all","All"],["active","Active"],["resolved","Resolved"],["text","News"],["price","Price"]].map(([val,label])=>(
+              <button key={val} onClick={()=>setFilterType(val)} className={`filter-pill${filterType===val?" active":""}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:8,flexShrink:0}}>
             {hiddenIds.size>0&&(
               <button onClick={()=>{ setHiddenIds(new Set()); localStorage.removeItem("hiddenMarkets"); }} className="pm-btn-ghost" style={{padding:"6px 14px",fontSize:13,color:"#6B7280"}}>
                 Show hidden ({hiddenIds.size})
@@ -525,13 +580,12 @@ export default function App() {
           </div>
         </div>
 
-        {filteredMarkets.length===0 && (
-          <div style={{background:"#F9FAFB",border:"1px solid #E5E7EB",borderRadius:12,padding:"64px 24px",textAlign:"center",color:"#9CA3AF",fontSize:15}}>
-            {markets.length===0?"No markets yet — create the first one.":"No markets match this filter."}
-          </div>
-        )}
-
-        <div className="markets-grid" style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(300px,1fr))",gap:14}}>
+        <div className="markets-grid" style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:14}}>
+          {filteredMarkets.length===0 && (
+            <div style={{gridColumn:"1/-1",background:"#F9FAFB",border:"1px solid #E5E7EB",borderRadius:12,padding:"64px 24px",textAlign:"center",color:"#9CA3AF",fontSize:15}}>
+              {markets.length===0?"No markets yet — create the first one.":"No markets match this filter."}
+            </div>
+          )}
           {filteredMarkets.map((m)=>{
             const expired=Date.now()/1000>=Number(m.expiryDate);
             const yesPool=Number(formatEther(m.yesPool||0n));
@@ -670,18 +724,57 @@ export default function App() {
                   )}
                 </div>
 
-                {isText&&m.evidence&&(
-                  <div style={{marginTop:14,padding:"10px 12px",background:"#F9FAFB",borderRadius:8,border:"1px solid #F3F4F6"}}>
-                    <p style={{margin:"0 0 3px",fontSize:10,fontWeight:700,color:"#9CA3AF",textTransform:"uppercase",letterSpacing:"0.06em"}}>On-chain evidence</p>
-                    <p style={{margin:0,fontSize:12,color:"#6B7280",lineHeight:1.5,wordBreak:"break-word"}}>
-                      {m.evidence.slice(0,240)}{m.evidence.length>240?"…":""}
-                    </p>
+                {isText&&m.sources&&(
+                  <div style={{marginTop:14,padding:"10px 12px",background:"#EFF6FF",borderRadius:8,border:"1px solid #DBEAFE"}}>
+                    <p style={{margin:"0 0 6px",fontSize:10,fontWeight:700,color:"#1D4ED8",textTransform:"uppercase",letterSpacing:"0.06em"}}>Resolves using news from</p>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                      {m.sources.split(",").map(s=>s.trim()).filter(Boolean).map(domain=>(
+                        <span key={domain} style={{
+                          background:"#fff",color:"#1D4ED8",border:"1px solid #BFDBFE",
+                          borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600
+                        }}>{domain}</span>
+                      ))}
+                    </div>
                   </div>
                 )}
+
+                {isText&&m.evidence&&(()=>{
+                  const articles=parseEvidence(m.evidence);
+                  return (
+                    <div style={{marginTop:10,padding:"10px 12px",background:"#F9FAFB",borderRadius:8,border:"1px solid #F3F4F6"}}>
+                      <p style={{margin:"0 0 8px",fontSize:10,fontWeight:700,color:"#9CA3AF",textTransform:"uppercase",letterSpacing:"0.06em"}}>On-chain evidence</p>
+                      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                        {articles.slice(0,5).map((art,i)=>(
+                          <div key={i} style={{display:"flex",gap:6,alignItems:"flex-start"}}>
+                            <span style={{fontSize:10,color:"#D1D5DB",fontWeight:700,flexShrink:0,lineHeight:1.6,minWidth:14}}>{i+1}.</span>
+                            <div style={{minWidth:0}}>
+                              <span style={{fontSize:12,color:"#374151",fontWeight:500,lineHeight:1.4,display:"block"}}>{art.title}</span>
+                              {(art.domain||art.date)&&(
+                                <span style={{fontSize:11,color:"#9CA3AF",lineHeight:1.4}}>
+                                  {art.domain&&<span>{art.domain}</span>}
+                                  {art.domain&&art.date&&<span> · </span>}
+                                  {art.date&&<span>{formatGdeltDate(art.date)}</span>}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                        {articles.length>5&&(
+                          <p style={{margin:"2px 0 0",fontSize:11,color:"#9CA3AF"}}>+{articles.length-5} more articles</p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
                 {m.resolutionData&&(
                   <div style={{marginTop:8,padding:"10px 12px",background:"#F9FAFB",borderRadius:8,border:"1px solid #F3F4F6"}}>
-                    <p style={{margin:"0 0 3px",fontSize:10,fontWeight:700,color:"#9CA3AF",textTransform:"uppercase",letterSpacing:"0.06em"}}>Oracle prompt</p>
-                    <p style={{margin:0,fontSize:12,color:"#6B7280",lineHeight:1.5}}>{m.resolutionData.slice(0,200)}…</p>
+                    <p style={{margin:"0 0 6px",fontSize:10,fontWeight:700,color:"#9CA3AF",textTransform:"uppercase",letterSpacing:"0.06em"}}>AI reasoning prompt</p>
+                    <p style={{
+                      margin:0,fontSize:11,color:"#6B7280",lineHeight:1.6,
+                      fontFamily:"'SF Mono','Menlo','Consolas',monospace",
+                      background:"#F3F4F6",padding:"8px 10px",borderRadius:6,
+                      whiteSpace:"pre-wrap",wordBreak:"break-word"
+                    }}>{m.resolutionData.slice(0,320)}{m.resolutionData.length>320?"…":""}</p>
                   </div>
                 )}
               </div>

@@ -2,7 +2,7 @@
   "network": "fuji",
   "chainId": 43113,
   "rpcUrl": "https://api.avax-test.network/ext/bc/C/rpc",
-  "address": "0x1f50826d59C139d7F48AD9DaE840354B85F18EEF",
+  "address": "0x838baB8eEb55568af6E27857500dFED93a797177",
   "marketId": 0,
   "abi": [
     {
@@ -120,6 +120,11 @@
           "name": "expiryDate",
           "type": "uint256",
           "internalType": "uint256"
+        },
+        {
+          "name": "sources",
+          "type": "string",
+          "internalType": "string"
         }
       ],
       "outputs": [
@@ -254,6 +259,11 @@
               "name": "evidenceSubmitted",
               "type": "bool",
               "internalType": "bool"
+            },
+            {
+              "name": "sources",
+              "type": "string",
+              "internalType": "string"
             }
           ]
         }
@@ -378,6 +388,11 @@
           "name": "evidenceSubmitted",
           "type": "bool",
           "internalType": "bool"
+        },
+        {
+          "name": "sources",
+          "type": "string",
+          "internalType": "string"
         }
       ],
       "stateMutability": "view"
