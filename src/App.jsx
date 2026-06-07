@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { createWalletClient, createPublicClient, custom, http, parseEther, formatEther } from "viem";
+import { createWalletClient, createPublicClient, custom, http, fallback, parseEther, formatEther } from "viem";
 
 const avalancheFuji = {
   id: 43113,
@@ -9,7 +9,15 @@ const avalancheFuji = {
   rpcUrls: { default: { http: ["https://api.avax-test.network/ext/bc/C/rpc"] } },
 };
 
-const publicClient = createPublicClient({ chain: avalancheFuji, transport: http() });
+const publicClient = createPublicClient({
+  chain: avalancheFuji,
+  transport: fallback([
+    http("https://api.avax-test.network/ext/bc/C/rpc"),
+    http("https://rpc.ankr.com/avalanche_fuji"),
+    http("https://avalanche-fuji-c-chain-rpc.publicnode.com"),
+  ]),
+  pollingInterval: 2_000,
+});
 
 const GDELT_MAX_RECORDS = 75;
 const EVIDENCE_CHAR_BUDGET = 1800;
@@ -223,13 +231,22 @@ export default function App() {
   async function withTx(label,fn){
     if(!wallet) return alert("Connect wallet first");
     setLoading(true);
+    let hash;
     try{
-      const hash=await fn();
+      hash=await fn();
       setStatus(`Confirming... ${hash.slice(0,10)}`);
-      await publicClient.waitForTransactionReceipt({hash});
+      await publicClient.waitForTransactionReceipt({hash,timeout:60_000});
       setStatus(`${label} Tx: ${hash.slice(0,10)}...`);
       await loadMarkets();
-    }catch(e){ setStatus("Error: "+(e.shortMessage||e.message)); }
+    }catch(e){
+      const msg=String(e.shortMessage||e.message||"");
+      if(msg.toLowerCase().includes("timed out")&&hash){
+        setStatus(`RPC slow — tx may have landed. Hit Refresh to check (${hash.slice(0,10)})`);
+        await loadMarkets();
+      }else{
+        setStatus("Error: "+msg);
+      }
+    }
     setLoading(false);
   }
 
@@ -254,7 +271,7 @@ export default function App() {
 
   async function sendAndWait(functionName,args,value){
     const hash=await send(functionName,args,value);
-    await publicClient.waitForTransactionReceipt({hash});
+    await publicClient.waitForTransactionReceipt({hash,timeout:120_000});
     return hash;
   }
 
